@@ -39,6 +39,7 @@ azure_ai_location = os.environ["AZURE_AI_LOCATION"]
 local_debug = os.environ["LOCAL_DEBUG"]
 azure_ai_credential_domain = os.environ["AZURE_AI_CREDENTIAL_DOMAIN"]
 azure_openai_authority_host = os.environ["AZURE_OPENAI_AUTHORITY_HOST"]
+enable_translation = os.environ.get("ENABLE_TRANSLATION", "false").lower() == "true"  # Default to disabled if not set
 
 FUNCTION_NAME = "TextEnrichment"
 MAX_CHARS_FOR_DETECTION = 1000
@@ -157,8 +158,20 @@ def main(msg: func.QueueMessage) -> None:
             statusLog.save_document(blob_path)
             return
 
+        # If translation is disabled, log this fact and set detected language to target language
+        if not enable_translation:
+            # Only log when translation would be needed (when languages differ)
+            if detected_language != targetTranslationLanguage:
+                statusLog.upsert_document(
+                    blob_path,
+                    f"{FUNCTION_NAME} - Translation is disabled. Using original content.",
+                    StatusClassification.DEBUG,
+                    State.PROCESSING
+                )
+            # Setting detected_language to targetTranslationLanguage will skip translation
+            detected_language = targetTranslationLanguage
         # If the language of the document is not equal to target language then translate the generated chunks
-        if detected_language != targetTranslationLanguage:
+        elif detected_language != targetTranslationLanguage:
             statusLog.upsert_document(
                 blob_path,
                 f"{FUNCTION_NAME} - Non-target language detected",
@@ -265,7 +278,7 @@ def main(msg: func.QueueMessage) -> None:
 
 def translate_and_set(field_name, chunk_dict, headers, params, message_json, detected_language, targetTranslationLanguage, apiTranslateEndpoint):
     '''Translate text if it is not in target language'''
-    if detected_language != targetTranslationLanguage:
+    if detected_language != targetTranslationLanguage and enable_translation:
         data = [{"text": chunk_dict[field_name]}]
         response = requests.post(apiTranslateEndpoint, headers=headers, json=data, params=params)
         
@@ -277,6 +290,7 @@ def translate_and_set(field_name, chunk_dict, headers, params, message_json, det
             requeue(response, message_json)
             return   
     else:
+        # Skip translation if language matches target or translation is disabled
         chunk_dict[f"translated_{field_name}"] = chunk_dict[f"{field_name}"]
         return
 
